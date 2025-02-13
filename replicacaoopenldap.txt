@@ -1,0 +1,293 @@
+0.0 RESUMO DA REPLICAÇÃO
+
+0.1 Na conf's dos master precisamos resumidamente:
+	- carregar o módulo syncprov.la
+	- linkar o módulo synprov com o DIT(banco do ldap) desejado no servidor master
+	- criar um usuário de leitura(olcAccess) que tenha a permissão de "read all dn" no DIT master 
+	- configurar os atributos olcDbIndex: entryCSN eq,entryUUID eq,objectClass eq,contextCSN eqno DIT master
+
+0.2 Nas conf'd do consumer precisamos:
+
+	- atribuir o atributo olcSyncrel no DIT do consumer que vai receber as replicação
+	- (OBS) Devido a forma de como foi montada a estrutura dos dois serviços paraa replicaçãp foi necessário habilitar
+	  o olcSi\Limit do dn: cn=condfig do Consumer como unlimited
+
+0.3 O COMANDO A NÍVEL DE HOST PARA APLICAR AS CONF'S
+
+	ldapsearch -Q -Y EXTERNAL -H ldapi:///
+	ldapadd -Q -Y EXTERNAL -H ldapi:///
+	ldapmodify -Q -Y EXTERNAL -H ldapi:///
+
+#algums ressalvas a versão que está sendo replicada do openldap é a 2.4 então nesta versão o tipode banco é o "hdb" e sobre os atributos olcSpCheckPoint e olcSpSession no modulo synprov eles podem ter outro nome em versões =>2.4 
+
+1.0 MASTER (PROVIDER) CONFIGURAÇÃO DINâMICA USANDO OLC,LDIF E LDAPUTILS
+
+
+
+1.1 CARREGANDO O MÓDULO SYNCPROV NO MASTER.
+
+
+	ldapadd -Q -Y EXTERNAL -H ldapi:/// <<EOF
+	dn: cn=module{0},cn=config
+	changetype: modify
+	add: olcModuleLoad
+	olcModuleLoad: syncprov.la
+	EOF
+
+1.2 LINKAR O SYNCPROV COM O DIT DESEJADO
+ 
+(OBS)
+
+	ldapadd -Q -Y EXTERNAL -H ldapi:/// <<EOF
+	dn: olcOverlay=syncprov,olcDatabase={1}hdb,cn=config
+	objectClass: olcOverlayConfig
+	objectClass: olcSyncProvConfig
+	olcOverlay: syncprov
+	olcSPCheckpoint: 100 10
+	olcSPSessionLog: 100
+	EOF
+
+1.3 CRIAR O USUÁRIO NO MASTER QUE VAI SER RESPONSÁVEL PELA LEITURA DA REPICLAÇÃO
+
+
+	ldapadd -x -D "cn=admin,dc=ufam,dc=edu,dc=br" -W <<EOF
+	dn: cn=replicator,dc=ufam,dc=edu,dc=br
+	objectClass: simpleSecurityObject
+	objectClass: organizationalRole
+	cn: replicator
+	userPassword: secret
+	EOF
+	
+1.4 ADICIONAR O USUÁRIO NO DIT MASTER
+
+	ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<EOF
+	dn: olcDatabase={1}hdb,cn=config
+	changetype: modify
+	add: olcAccess
+	olcAccess: to * by dn="cn=replicator,dc=ufam,dc=edu,dc=br" read by * none
+	EOF
+
+
+1.5 CRIAR OS INDEX DO DIT MASTER
+
+	ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<EOF
+	dn: olcDatabase={1}hdb,cn=config
+	changetype: modify
+	add: olcDbIndex
+	olcDbIndex: entryUUID eq
+	olcDbIndex: entryCSN eq
+	olcDbIndex: contextCSN eq
+	olcDbIndex: objectClass eq
+	EOF
+	
+	APÓS: 	
+		pare o serviço
+			service slapd stop 
+			ou
+			killall slapd 
+		rode:
+		slapindex
+		service slapd start
+	
+	
+
+2.0 CONF'S DO CONSUMER
+
+	ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<EOF
+	dn: olcDatabase={1}hdb,cn=config
+	changetype: modify
+	add: olcSyncrepl
+	olcSyncrepl: rid=001
+  	provider=ldap://<MASTER-IP>
+  	binddn="cn=replicator,dc=ufam,dc=edu,dc=br"
+  	bindmethod=simple
+  	credentials=<senha do usuario replicator>
+  	searchbase="dc=ufam,dc=edu,dc=br"
+  	schemachecking=on
+  	type=refreshAndPersist
+  	retry="5 10 60 +"
+	EOF
+
+2.1 RESSALVA NO OLCSIZELIMIT
+
+	ldapmodify -Q -Y EXTERNAL -H ldapi:/// <<EOF
+	dn: cn=config
+	changetype: modify
+	add: olcSizeLimit
+	olcSizeLimit: unlimited
+	EOF
+	
+	reinicie o serviço:
+
+
+###############################################################################
+			NO FINAL A CONF DOS BANCOS DEVEM ESTÁ:
+###############################################################################
+				CONF MASTER
+###############################################################################
+ldapsearch -Q -Y EXTERNAL -H ldapi:/// -b "cn=module{0},cn=config"
+# extended LDIF
+#
+# LDAPv3
+# base <cn=module{0},cn=config> with scope subtree
+# filter: (objectclass=*)
+# requesting: ALL
+#
+
+# module{0}, config
+dn: cn=module{0},cn=config
+objectClass: olcModuleList
+cn: module{0}
+olcModulePath: /usr/lib/ldap
+olcModuleLoad: {0}back_hdb
+olcModuleLoad: {1}auditlog.la
+olcModuleLoad: {2}lastbind.la
+olcModuleLoad: {3}syncprov.la
+
+###############################################################################
+ ldapsearch -Q -Y EXTERNAL -H ldapi:/// -b "olcOverlay={4}syncprov,olcDatabase={1}hdb,cn=config"
+# extended LDIF
+#
+# LDAPv3
+# base <olcOverlay={4}syncprov,olcDatabase={1}hdb,cn=config> with scope subtree
+# filter: (objectclass=*)
+# requesting: ALL
+#
+
+# {4}syncprov, {1}hdb, config
+dn: olcOverlay={4}syncprov,olcDatabase={1}hdb,cn=config
+objectClass: olcOverlayConfig
+objectClass: olcSyncProvConfig
+olcOverlay: {4}syncprov
+olcSpCheckpoint: 50 5
+olcSpSessionlog: 100
+
+###############################################################################
+ ldapsearch -Q -Y EXTERNAL -H ldapi:/// -b "olcDatabase={1}hdb,cn=config"
+# extended LDIF
+#
+# LDAPv3
+# base <olcDatabase={1}hdb,cn=config> with scope subtree
+# filter: (objectclass=*)
+# requesting: ALL
+#
+
+# {1}hdb, config
+dn: olcDatabase={1}hdb,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcHdbConfig
+olcDatabase: {1}hdb
+olcDbDirectory: /var/lib/ldap
+olcSuffix: dc=ufam,dc=edu,dc=br
+olcAccess: {0}to * by dn="cn=replicator,dc=ufam,dc=edu,dc=br" read by * read
+olcAccess: {1}to dn.base="dc=ufam,dc=edu,dc=br" attrs=entry,children,contextCS
+ N,entryCSN by dn="cn=replicator,dc=ufam,dc=edu,dc=br" read by * none
+olcAccess: {2}to dn.subtree="ou=people,dc=ufam,dc=edu,dc=br" by dn="cn=ecampus
+ ,dc=ufam,dc=edu,dc=br" write by dn="cn=admin,dc=ufam,dc=edu,dc=br" write by d
+ n="cn=autenticador,dc=ufam,dc=edu,dc=br" read by anonymous auth by * read
+olcAccess: {3}to attrs=userPassword by dn="cn=admin,dc=ufam,dc=edu,dc=br" writ
+ e by dn="cn=autenticador,dc=ufam,dc=edu,dc=br" auth by anonymous auth by self
+  read
+olcAccess: {4}to * by dn="cn=admin,dc=ufam,dc=edu,dc=br" write by dn="cn=auten
+ ticador,dc=ufam,dc=edu,dc=br" read by dn="cn=ecampus,dc=ufam,dc=edu,dc=br" re
+ ad by self read by * none
+olcLastMod: TRUE
+olcRequires: authc
+olcRequires: none
+olcRootDN: cn=admin,dc=ufam,dc=edu,dc=br
+olcRootPW: {SHA}EGRFuvZzOQiBF+/w3IWdHnYLD/I=
+olcDbCheckpoint: 512 30
+olcDbConfig: {0}set_cachesize 0 2097152 0
+olcDbConfig: {1}set_lk_max_objects 1500
+olcDbConfig: {2}set_lk_max_locks 1500
+olcDbConfig: {3}set_lk_max_lockers 1500
+olcDbIndex: entryCSN eq
+olcDbIndex: entryUUID eq
+olcDbIndex: objectClass eq
+olcDbIndex: contextCSN eq
+	
+###############################################################################
+				CONF SLAVE
+###############################################################################			
+ldapsearch -Q -Y EXTERNAL -H ldapi:/// -b "cn=config" | more
+# extended LDIF
+#
+# LDAPv3
+# base <cn=config> with scope subtree
+# filter: (objectclass=*)
+# requesting: ALL
+#
+
+# config
+dn: cn=config
+objectClass: olcGlobal
+cn: config
+olcArgsFile: /var/run/slapd/slapd.args
+olcLogLevel: stats sync config
+olcPidFile: /var/run/slapd/slapd.pid
+olcSizeLimit: unlimited
+olcToolThreads: 1
+
+###############################################################################
+ ldapsearch -Q -Y EXTERNAL -H ldapi:/// -b "olcDatabase={1}hdb,cn=config"
+# extended LDIF
+#
+# LDAPv3
+# base <olcDatabase={1}hdb,cn=config> with scope subtree
+# filter: (objectclass=*)
+# requesting: ALL
+#
+
+# {1}hdb, config
+dn: olcDatabase={1}hdb,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcHdbConfig
+olcDatabase: {1}hdb
+olcDbDirectory: /var/lib/ldap
+olcSuffix: dc=ufam,dc=edu,dc=br
+olcAccess: {0}to dn.subtree="ou=people,dc=ufam,dc=edu,dc=br"    by dn="cn=ecam
+ pus,dc=ufam,dc=edu,dc=br" write   by dn="cn=admin,dc=ufam,dc=edu,dc=br" write
+    by dn="cn=autenticador,dc=ufam,dc=edu,dc=br" read   by anonymous auth   by
+  * read
+olcAccess: {1}to attrs=userPassword   by dn="cn=admin,dc=ufam,dc=edu,dc=br" wr
+ ite   by dn="cn=autenticador,dc=ufam,dc=edu,dc=br" auth   by anonymous auth  
+  by self read
+olcAccess: {2}to *   by dn="cn=admin,dc=ufam,dc=edu,dc=br" write   by dn="cn=a
+ utenticador,dc=ufam,dc=edu,dc=br" read   by dn="cn=ecampus,dc=ufam,dc=edu,dc=
+ br" read   by self read   by * none
+olcLastMod: TRUE
+olcRequires: authc
+olcRequires: none
+olcRootDN: cn=admin,dc=ufam,dc=edu,dc=br
+olcRootPW: {SHA}EGRFuvZzOQiBF+/w3IWdHnYLD/I=
+olcSyncrepl: {0}rid=001 provider=ldap://10.206.200.2:389 type=refreshAndPersis
+ t retry="5 5 10 +" searchbase="dc=ufam,dc=edu,dc=br" attrs="*" bindmethod=sim
+ ple binddn="cn=replicator,dc=ufam,dc=edu,dc=br" credentials=replicator
+olcDbCheckpoint: 512 30
+olcDbConfig: {0}set_cachesize 0 2097152 0
+olcDbConfig: {1}set_lk_max_objects 1500
+olcDbConfig: {2}set_lk_max_locks 1500
+olcDbConfig: {3}set_lk_max_lockers 1500
+olcDbIndex: objectClass eq
+	
+###############################################################################
+			:EXTRAS:
+			COMANDOS PARA TESTE DE CONEXAO
+			netstat -an | grep :389
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
